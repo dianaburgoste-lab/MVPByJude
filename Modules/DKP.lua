@@ -56,7 +56,7 @@ do
                 M._rosterCache[name] = {
                     class  = classFile or classDisplay or "UNKNOWN",
                     rank   = rankIndex or 99,
-                    online = online or false,
+                    online = (online ~= nil and online ~= false) and true or false,
                     note   = officerNote or "",
                 }
             end
@@ -762,7 +762,7 @@ function M:ImportFromNotes()
                 M._rosterCache[name] = M._rosterCache[name] or {}
                 M._rosterCache[name].class  = classFile or classDisplay or "UNKNOWN"
                 M._rosterCache[name].rank   = rankIndex or 99
-                M._rosterCache[name].online = online or false
+                M._rosterCache[name].online = (online ~= nil and online ~= false) and true or false
                 M._rosterCache[name].note   = officerNote or ""
             end
         end
@@ -1075,7 +1075,14 @@ function M:BuildUI(parent)
     Skin:Font(ooFs, 10, false); ooFs:SetPoint("LEFT", onlyOnline, "RIGHT", 4, 0)
     ooFs:SetText("Online")
     onlyOnline:SetScript("OnClick", function(s)
-        M.filterOnlyOnline = s:GetChecked()
+        local checked = s:GetChecked()
+        if checked then
+            M.filterViewOffline = false
+            M.filterOnlyRaid    = false
+            viewOffline:SetChecked(false)
+            onlyRaid:SetChecked(false)
+        end
+        M.filterOnlyOnline = checked and true or false
         M:Refresh()
     end)
     M._onlyOnlineCheck = onlyOnline
@@ -1087,7 +1094,14 @@ function M:BuildUI(parent)
     Skin:Font(voFs, 10, false); voFs:SetPoint("LEFT", viewOffline, "RIGHT", 4, 0)
     voFs:SetText("Mains Offline")
     viewOffline:SetScript("OnClick", function(s)
-        M.filterViewOffline = s:GetChecked()
+        local checked = s:GetChecked()
+        if checked then
+            M.filterOnlyOnline = false
+            M.filterOnlyRaid   = false
+            onlyOnline:SetChecked(false)
+            onlyRaid:SetChecked(false)
+        end
+        M.filterViewOffline = checked and true or false
         M:Refresh()
     end)
     M._viewOfflineCheck = viewOffline
@@ -1099,7 +1113,14 @@ function M:BuildUI(parent)
     Skin:Font(orFs, 10, false); orFs:SetPoint("LEFT", onlyRaid, "RIGHT", 4, 0)
     orFs:SetText("Solo en Banda")
     onlyRaid:SetScript("OnClick", function(s)
-        M.filterOnlyRaid = s:GetChecked()
+        local checked = s:GetChecked()
+        if checked then
+            M.filterOnlyOnline  = false
+            M.filterViewOffline = false
+            onlyOnline:SetChecked(false)
+            viewOffline:SetChecked(false)
+        end
+        M.filterOnlyRaid = checked and true or false
         M:Refresh()
     end)
     M._onlyRaidCheck = onlyRaid
@@ -1444,6 +1465,9 @@ end
 
 function M:Refresh()
     if not self._ui then return end
+    if M._onlyOnlineCheck  then M._onlyOnlineCheck:SetChecked(M.filterOnlyOnline  or false) end
+    if M._viewOfflineCheck then M._viewOfflineCheck:SetChecked(M.filterViewOffline or false) end
+    if M._onlyRaidCheck    then M._onlyRaidCheck:SetChecked(M.filterOnlyRaid    or false) end
     local C = RMS.Skin.COLOR
 
     local rosterStandings = GetRosterStandings()
@@ -1535,11 +1559,20 @@ function M:Refresh()
             end
         end
         
-        -- Filtrar solo conectados si "Online" está activado
+        -- Aplicar filtro activo (solo uno puede estar activo a la vez)
         if self.filterOnlyOnline then
             local filtered = {}
             for _, row in ipairs(rows) do
                 if row.online == true then
+                    table.insert(filtered, row)
+                end
+            end
+            rows = filtered
+
+        elseif self.filterViewOffline then
+            local filtered = {}
+            for _, row in ipairs(rows) do
+                if row.online ~= true and (row.balance or 0) > 0 then
                     table.insert(filtered, row)
                 end
             end
