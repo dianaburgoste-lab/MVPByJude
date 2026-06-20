@@ -71,44 +71,41 @@ function Import:FromJSON(jsonString)
         for _, logEntry in ipairs(data.log) do
             if type(logEntry) ~= "table" then
                 errorCount = errorCount + 1
-                goto continue_log
-            end
-            
-            -- Safely extract fields with defaults
-            local entry = {
-                id = logEntry.event_uid or ("imported-" .. (logEntry.timestamp or time())),
-                time = logEntry.timestamp or time(),
-                by = logEntry.master or "Imported",
-                delta = tonumber(logEntry.amount) or 0,
-                reason = tostring(logEntry.reason or logEntry.event or "Imported"),
-                players = self:ParseTargets(logEntry.target, logEntry.target_main),
-            }
-            
-            -- Check for duplicates (same uid or very close timestamp with same master)
-            local isDuplicate = false
-            for _, existing in ipairs(state.log) do
-                if existing.id == entry.id then
-                    isDuplicate = true
-                    skippedCount = skippedCount + 1
-                    break
+            else
+                -- Safely extract fields with defaults
+                local entry = {
+                    id = logEntry.event_uid or ("imported-" .. (logEntry.timestamp or time())),
+                    time = logEntry.timestamp or time(),
+                    by = logEntry.master or "Imported",
+                    delta = tonumber(logEntry.amount) or 0,
+                    reason = tostring(logEntry.reason or logEntry.event or "Imported"),
+                    players = self:ParseTargets(logEntry.target, logEntry.target_main),
+                }
+                
+                -- Check for duplicates (same uid or very close timestamp with same master)
+                local isDuplicate = false
+                for _, existing in ipairs(state.log) do
+                    if existing.id == entry.id then
+                        isDuplicate = true
+                        skippedCount = skippedCount + 1
+                        break
+                    end
+                    -- Also check for near-duplicates: same time, master, delta, and players
+                    if existing.time == entry.time and 
+                       existing.by == entry.by and 
+                       existing.delta == entry.delta and
+                       existing.players == entry.players then
+                        isDuplicate = true
+                        skippedCount = skippedCount + 1
+                        break
+                    end
                 end
-                -- Also check for near-duplicates: same time, master, delta, and players
-                if existing.time == entry.time and 
-                   existing.by == entry.by and 
-                   existing.delta == entry.delta and
-                   existing.players == entry.players then
-                    isDuplicate = true
-                    skippedCount = skippedCount + 1
-                    break
+                
+                if not isDuplicate and entry.players ~= "" then
+                    table.insert(state.log, entry)
+                    importedCount = importedCount + 1
                 end
             end
-            
-            if not isDuplicate and entry.players ~= "" then
-                table.insert(state.log, entry)
-                importedCount = importedCount + 1
-            end
-            
-            ::continue_log::
         end
     end
     

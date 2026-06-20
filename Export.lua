@@ -248,7 +248,16 @@ end
 
 function Export:GetPlayerClass(playerName)
     if not playerName then return "UNKNOWN" end
-    
+
+    -- Usar el cache central de DKP en vez de llamar GetGuildRosterInfo cada vez
+    if RMS.DKP and RMS.DKP._rosterCache then
+        local cached = RMS.DKP._rosterCache[playerName]
+        if cached and cached.class then
+            return cached.class
+        end
+    end
+
+    -- Fallback: buscar en roster en vivo si no está en cache
     local num = GetNumGuildMembers() or 0
     for i = 1, num do
         local name, _, _, _, _, _, _, _, _, _, class = GetGuildRosterInfo(i)
@@ -281,17 +290,4 @@ function Export:GetExportData()
     return self:ToJSON()
 end
 
--- =============================================================================
--- REGISTER SLASH COMMAND
--- =============================================================================
-
-SLASH_MVPEXPORT1 = "/mvpexport"
-SlashCmdList.MVPEXPORT = function(args)
-    if args:lower() == "json" then
-        Export:ExportToEditbox()
-    else
-        RMS:Print("|cff00ff00Comandos disponibles:|r")
-        RMS:Print("/mvpexport json - Exportar datos a JSON")
-    end
-end
 
