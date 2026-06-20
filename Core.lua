@@ -72,7 +72,7 @@ end
 
 function RMS:PlayerFullName()
     local name, realm = UnitName("player"), GetRealmName()
-    return name.."-"..((realm or ""):gsub("%s+","")) -- [FIXED: FIX-CORE-2]
+    return name.."-"..((realm or ""):gsub("%s+",""))
 end
 
 function RMS:InRaid() return GetNumRaidMembers() > 0 end
@@ -80,13 +80,13 @@ function RMS:InGroup() return GetNumRaidMembers() > 0 or GetNumPartyMembers() > 
 
 function RMS:IsRaidLeader()
     if not self:InRaid() then return false end
-    return IsRaidLeader() == true -- [FIXED: FIX-CORE-1]
+    return IsRaidLeader() == true
 end
 
 function RMS:IsAssist()
     if not self:InRaid() then return false end
     if self:IsRaidLeader() then return true end
-    return IsRaidOfficer() == true -- [FIXED: FIX-CORE-1]
+    return IsRaidOfficer() == true
 end
 
 function RMS:IsMasterLooter()

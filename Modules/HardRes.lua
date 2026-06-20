@@ -38,7 +38,7 @@ end
 
 local function pushLog(msg)
     table.insert(M.state.log, 1, msg)
-    if #M.state.log > 30 then table.remove(M.state.log) end -- [FIXED: FIX-HR-3]
+    if #M.state.log > 30 then table.remove(M.state.log) end
 end
 
 local function getCandidateIndex(slot, name)
@@ -69,7 +69,7 @@ end
 function M:Close()
     if not canHostSession() then RMS:Print("Only the raid leader can close a Hard Res session.") return end
     self.state.active = false
-    self.state.sessionId = nil -- [FIX BUG #3]
+    self.state.sessionId = nil
     persist()
     RMS.Comm:Send("hardres", "close", {})
     RMS:Print("Hard Res session CLOSED.")
@@ -121,7 +121,7 @@ RMS.Comm:On("hardres", "open", function(p, sender)
     M.state.leader      = p.leader or sender
     M.state.assignments = {}
     M.state.log         = {}
-    -- [FIX BUG #3] Sincronizar identificador de sesión
+    -- Sincronizar identificador de sesión
     M.state.sessionId = p.sessionId or (p.leader or sender)
     persist()
     M:Refresh()
@@ -147,7 +147,7 @@ RMS.Comm:On("hardres", "assign", function(p, sender)
     if not p.id or not p.player then return end
     -- only accept from current host
     if M.state.leader ~= sender then return end
-    -- [FIX BUG #2] Recibir el precio del paquete COMM
+    -- Recibir el precio del paquete COMM
     table.insert(M.state.assignments, {
         id = tonumber(p.id), link = p.link, name = p.name, player = p.player,
         price = tonumber(p.price) or 0,
@@ -176,7 +176,7 @@ end)
 function M:RequestSync()
     if not RMS:InGroup() then return end
     if self.state.active then return end
-    -- [FIX BUG #3] Enviar el sessionId conocido (si existe)
+    -- Enviar el sessionId conocido (si existe)
     RMS.Comm:Send("hardres", "syncreq", { from = RMS:PlayerName(), sessionId = M.state.sessionId })
 end
 
@@ -188,7 +188,7 @@ RMS.Comm:On("hardres", "syncreq", function(p, sender)
     
     RMS.Comm:SendWhisper("hardres", "open", { leader = M.state.leader, sessionId = M.state.sessionId }, sender)
     for _, a in ipairs(M.state.assignments) do
-        -- [FIX BUG #2] Reenviar asignaciones con el precio
+        -- Reenviar asignaciones con el precio
         RMS.Comm:SendWhisper("hardres", "assign", {
             id = a.id, link = a.link or "", name = a.name or "", player = a.player,
             price = a.price or 0,
@@ -430,7 +430,7 @@ function M:BuildUI(parent)
     shardIcon:SetSize(22, 22)
     shardIcon:SetPoint("TOPLEFT", qaHdr, "BOTTOMLEFT", 4, -10)
     local _, _, _, _, _, _, _, _, _, shardTexture = GetItemInfo(50274)
-    shardIcon:SetTexture(shardTexture or "Interface\\Icons\\inv_misc_shadowfrozenshard_01") -- [FIXED: FIX-HR-1]
+    shardIcon:SetTexture(shardTexture or "Interface\\Icons\\inv_misc_shadowfrozenshard_01")
     
     local shardLabel = panel:CreateFontString(nil, "OVERLAY")
     Skin:Font(shardLabel, 11, true)
@@ -475,7 +475,7 @@ function M:BuildUI(parent)
     saronIcon:SetSize(22, 22)
     saronIcon:SetPoint("TOPLEFT", shardIcon, "BOTTOMLEFT", 0, -10)
     local _, _, _, _, _, _, _, _, _, saronTexture = GetItemInfo(49908)
-    saronIcon:SetTexture(saronTexture or "Interface\\Icons\\inv_crafting_primordialsaronite") -- [FIXED: FIX-HR-1]
+    saronIcon:SetTexture(saronTexture or "Interface\\Icons\\inv_crafting_primordialsaronite")
     
     local saronLabel = panel:CreateFontString(nil, "OVERLAY")
     Skin:Font(saronLabel, 11, true)
@@ -510,7 +510,7 @@ function M:BuildUI(parent)
 
     -- assignments list
     local listHdr = Skin:Header(panel, "Asignaciones Actuales")
-    -- [FIXED: FIX-HR-2] Limpieza de anclajes redundantes
+    -- Limpieza de anclajes redundantes
     listHdr:ClearAllPoints()
     listHdr:SetPoint("TOPLEFT", saronIcon, "BOTTOMLEFT", 0, -20)
     listHdr:SetWidth(540)

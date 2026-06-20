@@ -13,7 +13,7 @@ M.history = {}   -- finished sessions (persistent; bound to RMS.db.goldbid.histo
 
 local HISTORY_CAP_DEFAULT = 200
 
--- [SHAME SYSTEM] Cooldown anti-spam: un castigo por jugador cada 30 segundos
+-- Cooldown anti-spam por jugador: 30s
 local shameCD = {}
 
 local function newSessionId()
@@ -35,7 +35,7 @@ local function snapshot(sess)
         itemID   = sess.itemID, link = sess.link, name = sess.name,
         minBid   = sess.minBid, inc  = sess.inc,  duration = sess.duration,
         status   = sess.status, paid = sess.paid,
-        finishedAt = time(),     -- [FIXED: FIX-GB-2] timestamp Unix real, para mostrar fecha/hora
+        finishedAt = time(),     -- timestamp Unix real, para mostrar fecha/hora
         -- deadline usa GetTime() porque es relativo al tiempo de sesión actual
         bids = {},
     }
@@ -66,15 +66,15 @@ end
 -- ---------- session lifecycle ----------
 function M:Start(itemLink, opts)
     if self.session and self.session.status == "open" then
-        RMS:Print("Ya hay una subasta en curso. Cancélala primero.") -- [FIXED: FIX-GB-1]
+        RMS:Print("Ya hay una subasta en curso. Cancélala primero.")
         return
     end
     if not (RMS:IsRaidLeader() or RMS:IsMasterLooter() or not RMS:InRaid()) then
-        RMS:Print("Solo el líder de banda o el bot\195\179n maestro puede iniciar una subasta.") -- [FIXED: FIX-GB-1]
+        RMS:Print("Solo el líder de banda o el bot\195\179n maestro puede iniciar una subasta.")
         return
     end
     local itemID = tonumber(itemLink and itemLink:match("item:(%d+)"))
-    if not itemID then RMS:Print("Se necesita un enlace de objeto válido para iniciar la subasta.") return end -- [FIXED: FIX-GB-1]
+    if not itemID then RMS:Print("Se necesita un enlace de objeto válido para iniciar la subasta.") return end
     local name = itemLink:match("%[(.-)%]") or "?"
 
     local cfg = RMS.db.goldbid
@@ -97,7 +97,7 @@ function M:Start(itemLink, opts)
         id = sess.id, host = sess.host, item = sess.itemID, link = sess.link, name = sess.name,
         min = sess.minBid, inc = sess.inc, dur = sess.duration,
     })
-    RMS:Print("Subasta ABIERTA para %s -- mín %dg, %ds.", sess.link, sess.minBid, sess.duration) -- [FIXED: FIX-GB-1]
+    RMS:Print("Subasta ABIERTA para %s -- mín %dg, %ds.", sess.link, sess.minBid, sess.duration)
     self:Refresh(); self:ShowPopup()
 end
 
@@ -114,10 +114,10 @@ end
 
 function M:Cancel()
     if not self.session then return end
-    if not isHost() then RMS:Print("Solo el anfitrión de la sesión puede cancelarla.") return end -- [FIXED: FIX-GB-1]
+    if not isHost() then RMS:Print("Solo el anfitrión de la sesión puede cancelarla.") return end
     broadcast("cancel", { id = self.session.id })
     self.session.status = "cancelled"
-    RMS:Print("Subasta CANCELADA.") -- [FIXED: FIX-GB-1]
+    RMS:Print("Subasta CANCELADA.")
     self:ArchiveSession(); self:Refresh()
 end
 
@@ -127,7 +127,7 @@ function M:Extend(seconds)
     seconds = seconds or 15
     self.session.deadline = self.session.deadline + seconds
     broadcast("extend", { id = self.session.id, sec = seconds })
-    RMS:Print("Subasta extendida +%ds.", seconds) -- [FIXED: FIX-GB-1]
+    RMS:Print("Subasta extendida +%ds.", seconds)
 end
 
 function M:CloseNow()

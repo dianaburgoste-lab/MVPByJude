@@ -1,4 +1,4 @@
--- MVP By Jude -- BOTIN (Loot Tracker) module
+-- MVP By Jude -- BOTIN
 -- Automatically tracks epic loot drops from bosses and trash.
 -- Groups items by source (Boss Name or Trash).
 -- Includes DKP billing system.
@@ -7,9 +7,9 @@ local RMS = MVPByJude
 local M = RMS:RegisterModule("softres", { title = "BOTIN", order = 1 })
 
 -- ---------- Configuration & Safety ----------
-local BlizzGetItemInfo = _G.GetItemInfo  -- [FIX A] Alias seguro a API global
-local MIN_LOOT_QUALITY = 4               -- [FIX B] Calidad mínima (4=Épico). Cambiar a 3 para pruebas.
-local SOFTRES_DEBUG = false              -- [FIX G] Bandera de depuración
+local BlizzGetItemInfo = _G.GetItemInfo  -- alias directo para evitar shadowing
+local MIN_LOOT_QUALITY = 4  -- 4 = Épico; cambiar a 3 para incluir raros
+local SOFTRES_DEBUG = false  -- activar para logs de depuración
 
 local function DebugPrint(...)
     if SOFTRES_DEBUG then
@@ -34,7 +34,7 @@ local function restore()
 end
 
 -- ---------- Helpers ----------
--- [FIX A] Helper renombrado y seguro para evitar recursión infinita
+-- Extrae el ID y calidad de un item link de forma segura
 local function SafeGetItemInfoFromLink(link)
     if not link then return nil end
     local id = tonumber(link:match("item:(%d+)"))
@@ -92,17 +92,17 @@ end
 
 -- ---------- Logic ----------
 function M:AddLoot(itemLink, player)
-    -- [FIX A/B/D] Uso de helper seguro y manejo defensivo de calidad
+
     local id, quality = SafeGetItemInfoFromLink(itemLink)
     if not id then return end
     
-    -- [FIX D] Manejo conservador si el item no está en caché aún
+
     if quality == nil then
         DebugPrint("|cffffa000[SoftRes]|r Item no en caché (quality=nil): %s", itemLink)
         return
     end
 
-    -- [FIX B] Filtro de calidad configurable
+
     if quality < MIN_LOOT_QUALITY then 
         DebugPrint("|cffaaaaaa[SoftRes]|r Ignorado por calidad (%d < %d): %s", quality, MIN_LOOT_QUALITY, itemLink)
         return 
@@ -168,7 +168,7 @@ M.events = {
         self:Refresh()
     end,
     CHAT_MSG_LOOT = function(self, _, msg)
-        -- [FIXED: FIX-SR-3] Parsing robusto para cliente español
+        
         local link = msg:match("(|c%x+|Hitem:.-|h.-|h|r)")
         if not link then return end
         link = link:gsub("%.$", "")
@@ -187,8 +187,8 @@ M.events = {
         end
     end,
     COMBAT_LOG_EVENT_UNFILTERED = function(self, event, timestamp, subevent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags)
-        -- [FIXED: FIX-SR-2] Firma corregida para 3.3.5a
-        DebugPrint("CLEU: %s -> %s (dest: %s)", subevent, destName or "nil", destGUID or "nil") -- [FIXED: FIX-SR-DEBUG]
+        -- Firma corregida para 3.3.5a
+        DebugPrint("CLEU: %s -> %s (dest: %s)", subevent, destName or "nil", destGUID or "nil")
         if subevent == "UNIT_DIED" then
             if BOSS_IDS[destName] then
                 M.state.lastBoss = destName
@@ -272,7 +272,7 @@ function M:BuildUI(parent)
             r.link = nil
         else
             r.bg:SetVertexColor(alt and 0.10 or 0.13, alt and 0.10 or 0.13, alt and 0.12 or 0.15, 0.6)
-            -- [FIX F/D] Uso defensivo de GetItemInfo global y fallback de icono
+
             local _, _, _, _, _, _, _, _, _, itemIcon = BlizzGetItemInfo(data.link)
             r.icon:SetTexture(itemIcon or "Interface\\Icons\\INV_Misc_QuestionMark")
             r.text:SetText(data.link)
@@ -289,7 +289,7 @@ function M:BuildUI(parent)
                 r.chargeBtn:Enable()
                 r.chargeBtn:Show()
                 r.chargeBtn:SetScript("OnMouseUp", function()
-                    -- [FIXED: FIX-SR-1]
+    
                     showChargeMenu({source = data.source, idx = data.idx})
                 end)
             end
@@ -355,7 +355,7 @@ function M:Refresh()
     self._ui.list:SetData(displayData)
 end
 
--- [FIXED: FIX-SR-1] Eliminada redefinición global de RMS:ShowMenu
+
 
 local function showChargeMenu(data)
     local menu = {
