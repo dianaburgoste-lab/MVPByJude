@@ -640,6 +640,25 @@ function M:BuildUI(parent)
     pendingHdr:SetPoint("TOPLEFT", startBtn, "BOTTOMLEFT", 0, -12)
     pendingHdr:SetWidth(240)
 
+    -- Button: open LootPicker to add manual items
+    local addItemButton = CreateFrame("Button", nil, pendingHdr, "UIPanelButtonTemplate")
+    addItemButton:SetSize(90, 20)
+    addItemButton:SetPoint("TOPRIGHT", pendingHdr, "TOPRIGHT", -4, -4)
+    addItemButton:SetText("Añadir ítem…")
+    addItemButton:SetScript("OnClick", function()
+        if not RMS or not RMS.LootPicker then
+            RMS:Print("LootPicker no está disponible.")
+            return
+        end
+        RMS.LootPicker:Open({
+            onPick = function(itemLink, itemId)
+                if itemLink and itemId then
+                    M:AddManualItem(itemLink, itemId)
+                end
+            end,
+        })
+    end)
+
     local function buildPendingRow(parent)
         local r = CreateFrame("Frame", nil, parent)
         r:SetHeight(28)
@@ -900,8 +919,49 @@ function M:Refresh()
             end
         end
     end
+    -- Merge manual pendingLoot (if any) into the flat list so manual items appear
+    if self.state and type(self.state.pendingLoot) == "table" then
+        for _, mentry in ipairs(self.state.pendingLoot) do
+            if mentry then
+                -- Normalize to `link` field expected by updatePendingRow
+                local conv = mentry
+                if not conv.link and conv.itemLink then conv.link = conv.itemLink end
+                table.insert(flatLoot, conv)
+            end
+        end
+    end
     self._ui.pendingList:SetData(flatLoot)
     self._ui.logList:SetData(self.history)
+end
+
+-- Add a manual pending loot entry (from LootPicker)
+function M:AddManualItem(itemLink, itemId)
+    if not itemLink then return end
+
+    self.state = self.state or {}
+    self.state.pendingLoot = self.state.pendingLoot or {}
+
+    -- Avoid exact duplicates (same link and source manual)
+    for _, e in ipairs(self.state.pendingLoot) do
+        if e and e.itemLink == itemLink and e.source == "manual" then
+            return -- already present
+        end
+    end
+
+    local entry = {
+        link = itemLink,
+        itemLink = itemLink,
+        itemId = itemId,
+        source = "manual",
+    }
+
+    table.insert(self.state.pendingLoot, entry)
+
+    if self.RefreshPendingLoot then
+        pcall(function() self:RefreshPendingLoot() end)
+    elseif self.Refresh then
+        pcall(function() self:Refresh() end)
+    end
 end
 
 -- ---------- popup window (auto-shown to bidders) ----------
