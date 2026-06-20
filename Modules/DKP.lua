@@ -27,7 +27,6 @@ do
         end, 0.6)
     end)
 end
-end
 
 -- ---------- per-guild state ----------
 M.state    = nil   -- bound to RMS.db.dkp[<guild>] in OnInit / guild change
