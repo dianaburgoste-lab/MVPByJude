@@ -6,25 +6,89 @@
 local RMS = MVPByJude
 local M = RMS:RegisterModule("dkp", { title = "Gestión DKP", order = 3 })
 
--- Event helper: auto-refresh when the server sends guild roster updates
+-- [CACHE] Roster local persistente — fuente de verdad para LECTURA
+-- Se puebla EXCLUSIVAMENTE dentro del handler GUILD_ROSTER_UPDATE,
+-- donde el engine ya procesó la respuesta del servidor (datos garantizados).
+M._rosterCache = {}   -- [name] = {class, rank, online, note}
+M._rosterReady = false
+
+-- [THROTTLE] Cola de escritura de Officer Notes — patrón LibGuildStorage
+-- Escribe 1 nota por frame via OnUpdate para no saturar el servidor
+-- en operaciones masivas (Award a 25+ jugadores).
+local _writeQueue  = {}   -- {index=i, note=str, name=str}
+local _writeFrame  = nil
+
+local function _GetWriteFrame()
+    if _writeFrame then return _writeFrame end
+    _writeFrame = CreateFrame("Frame")
+    _writeFrame:Hide()
+    _writeFrame:SetScript("OnUpdate", function(self)
+        local entry = table.remove(_writeQueue, 1)
+        if entry then
+            GuildRosterSetOfficerNote(entry.index, entry.note)
+            -- Actualizar cache inmediatamente (sin esperar el próximo evento)
+            if M._rosterCache[entry.name] then
+                M._rosterCache[entry.name].note = entry.note
+            end
+        else
+            self:Hide()
+        end
+    end)
+    return _writeFrame
+end
+
+local function QueueOfficerNoteWrite(index, name, note)
+    table.insert(_writeQueue, { index = index, name = name, note = note })
+    _GetWriteFrame():Show()
+end
+
+-- [CACHE] Población del roster cache.
+-- GUILD_ROSTER_UPDATE es el único punto donde los datos están GARANTIZADOS
+-- (el engine ya procesó la respuesta del servidor). Aquí GetNumGuildMembers()
+-- retorna el roster completo (online + offline) sin SetGuildRosterShowOffline.
 do
-    local _guildEventFrame = CreateFrame("Frame")
-    _guildEventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
-    _guildEventFrame:SetScript("OnEvent", function()
+    local _guildCacheFrame = CreateFrame("Frame")
+    _guildCacheFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
+    _guildCacheFrame:SetScript("OnEvent", function()
         if M._suspendGuildRefresh then return end
-        -- mark that roster updates are incoming and show waiting state
-        M._waitingForRoster = true
-        -- Debounce bursts of events (longer delay to allow server to send full roster)
-        if M._guildRosterDebounce then return end
-        M._guildRosterDebounce = true
-        M:ScheduleTimer(function()
-            M._guildRosterDebounce = false
-            M._waitingForRoster = false
-            pcall(function()
-                if M._RefreshRankCache then pcall(function() M:_RefreshRankCache() end) end
-                M:Refresh()
-            end)
-        end, 0.6)
+
+        local n = GetNumGuildMembers() or 0
+
+        -- Limpiar cache anterior
+        for k in pairs(M._rosterCache) do M._rosterCache[k] = nil end
+
+        -- Poblar cache con datos frescos y garantizados
+        for i = 1, n do
+            local name, _, rankIndex, _, classDisplay, _, _, officerNote,
+                  online, _, classFile = GetGuildRosterInfo(i)
+            if name then
+                M._rosterCache[name] = {
+                    class  = classFile or classDisplay or "UNKNOWN",
+                    rank   = rankIndex or 99,
+                    online = online or false,
+                    note   = officerNote or "",
+                }
+            end
+        end
+        M._rosterReady = true
+
+        -- Actualizar rank cache a partir del roster ya cargado (sin llamada extra)
+        M._rankCacheTime = 0
+        for k in pairs(M._rankCache) do M._rankCache[k] = nil end
+        for name, info in pairs(M._rosterCache) do
+            M._rankCache[name] = info.rank
+        end
+        M._rankCacheTime = GetTime()
+
+        -- Vaciar notas pendientes con el roster recién actualizado
+        if M.state then
+            pcall(function() M:FlushPendingOfficerNotes() end)
+        end
+
+        -- Refrescar UI
+        if M._ui then
+            pcall(function() M:Refresh() end)
+        end
     end)
 end
 
@@ -309,34 +373,38 @@ end
 
 local function GetRosterStandings()
     local standings = {}
-    if not GetNumGuildMembers then return standings end
-    WithFullGuildRoster(function()
+
+    -- Caso normal: leer del cache local (siempre completo, online + offline)
+    if next(M._rosterCache) ~= nil then
+        for name, info in pairs(M._rosterCache) do
+            local ep, gp = DecodeOfficerNote(info.note)
+            if ep then
+                standings[name] = {
+                    balance = ep - (gp or 0),
+                    earned  = ep,
+                    spent   = gp or 0,
+                }
+            end
+        end
+        return standings
+    end
+
+    -- Fallback de emergencia: cache aún vacío (primer login, antes del
+    -- primer GUILD_ROSTER_UPDATE). Lectura directa sin forzar offline.
+    if GetNumGuildMembers then
         local n = GetNumGuildMembers() or 0
         for i = 1, n do
-            local name, _, _, _, _, _, _, note = GetGuildRosterInfo(i)
+            local name, _, _, _, _, _, _, officerNote = GetGuildRosterInfo(i)
             if name then
-                local ep, gp = DecodeOfficerNote(note)
+                local ep, gp = DecodeOfficerNote(officerNote)
                 if ep then
                     standings[name] = {
                         balance = ep - (gp or 0),
-                        earned = ep,
-                        spent = gp or 0
+                        earned  = ep,
+                        spent   = gp or 0,
                     }
                 end
             end
-        end
-    end, true)
-
-    -- If we didn't read any standings immediately, schedule a delayed refresh
-    -- because GuildRoster() is asynchronous and notes may arrive shortly.
-    if next(standings) == nil then
-        if not M._standingsRetryScheduled then
-            M._standingsRetryScheduled = true
-            M:ScheduleTimer(function()
-                M._standingsRetryScheduled = false
-                -- Trigger UI refresh so standings are re-read and shown when available
-                pcall(function() M:Refresh() end)
-            end, 0.8)
         end
     end
 
@@ -361,60 +429,39 @@ function M:GetResolvedMain(name)
 end
 
 function M:GuildMembers()
-    if not GetNumGuildMembers then return {} end
+    local out   = {}
+    local seen  = {}
+    local ai    = self.state and self.state.altIndex
 
-    local out = {}
-    local seen = {}
-
-    -- Usar WithFullGuildRoster para asegurar que el roster está actualizado
-    WithFullGuildRoster(function()
-        local n = GetNumGuildMembers() or 0
-        local visibleRoster = {}
-        for i = 1, n do
-            local name, _, rankIndex, _, classDisplay, _, _, officerNote, online, _, classFile = GetGuildRosterInfo(i)
-            if name then
-                visibleRoster[name] = {
-                    class = classFile or classDisplay,
-                    rank = rankIndex,
-                    online = online
-                }
-            end
+    -- Fuente de verdad: cache local (siempre online + offline)
+    for name, info in pairs(M._rosterCache) do
+        local mainName = self:GetResolvedMain(name)
+        if mainName == name then
+            out[#out+1] = {
+                name   = name,
+                class  = info.class,
+                rank   = info.rank,
+                online = info.online,
+            }
+            seen[name] = true
         end
+    end
 
-        -- 1. Mains que están en el roster visible actual
-        for name, info in pairs(visibleRoster) do
-            local mainName = M:GetResolvedMain(name)
-            if mainName == name then
+    -- Fallback: mains conocidos en standings/índice persistente que no están
+    -- en el cache (ej: expulsados que aún tienen pendingNotes)
+    if ai and self.state and self.state.standings then
+        for name, _ in pairs(self.state.standings) do
+            if not seen[name] and not (ai.altToMain and ai.altToMain[name]) then
                 out[#out+1] = {
-                    name = name,
-                    class = info.class,
-                    rank = info.rank,
-                    online = info.online
+                    name   = name,
+                    class  = ai.classes[name] or "UNKNOWN",
+                    rank   = ai.ranks[name] or 99,
+                    online = false,
                 }
                 seen[name] = true
             end
         end
-
-        -- 2. Fallback: Mains conocidos en Standings/Índice (offline o no visibles)
-        local rosterStandings = GetRosterStandings()
-        local ai = M.state and M.state.altIndex
-        if ai then
-            for name, s in pairs(rosterStandings) do
-                if not seen[name] then
-                    -- Solo añadir si no es un alter conocido
-                    if not ai.altToMain[name] then
-                        table.insert(out, {
-                            name = name,
-                            class = ai.classes[name] or "UNKNOWN",
-                            rank = ai.ranks[name] or 99,
-                            online = false,
-                        })
-                        seen[name] = true
-                    end
-                end
-            end
-        end
-    end, false)  -- false = no forzar offline visualmente
+    end
 
     return out
 end
@@ -427,29 +474,41 @@ local function updateOfficerNote(playerName, delta)
 
     -- Protección contra escritura concurrente
     if _writeLock[resolvedMain] then
-        RMS:Print("|cffff9900[DKP]|r Escritura en curso para %s, encolando...", resolvedMain)
         M.state.pendingNotes = M.state.pendingNotes or {}
         M.state.pendingNotes[resolvedMain] = (M.state.pendingNotes[resolvedMain] or 0) + delta
         return
     end
-
     _writeLock[resolvedMain] = true
 
-    local n = GetNumGuildMembers() or 0
-    local found = false
-    for i = 1, n do
-        local name, _, _, _, _, _, _, note = GetGuildRosterInfo(i)
-        if name and name == resolvedMain then
-            local ep, gp = DecodeOfficerNote(note)
-            local currentBalance = (ep or 0) - (gp or 0)
-            local newBalance = math.max(0, currentBalance + delta)
-            GuildRosterSetOfficerNote(i, tostring(newBalance))
-            found = true
-            break
+    -- Calcular nuevo balance desde el cache local (fuente de verdad)
+    local cacheEntry = M._rosterCache[resolvedMain]
+    if cacheEntry then
+        local ep, gp = DecodeOfficerNote(cacheEntry.note)
+        local currentBalance = (ep or 0) - (gp or 0)
+        local newBalance     = math.max(0, currentBalance + delta)
+        local newNote        = tostring(newBalance)
+
+        -- Buscar el índice numérico en el roster para GuildRosterSetOfficerNote
+        local n = GetNumGuildMembers() or 0
+        local found = false
+        for i = 1, n do
+            local guildName = GetGuildRosterInfo(i)
+            if guildName and guildName == resolvedMain then
+                -- Usar write-throttle (1 escritura por frame)
+                QueueOfficerNoteWrite(i, resolvedMain, newNote)
+                found = true
+                break
+            end
         end
-    end
-    -- Si no está visible, guardar como pending
-    if not found and M.state then
+
+        if not found then
+            -- No está en el roster visible → encolar como pendiente
+            M.state.pendingNotes = M.state.pendingNotes or {}
+            M.state.pendingNotes[resolvedMain] = (M.state.pendingNotes[resolvedMain] or 0) + delta
+        end
+    else
+        -- No está en el cache → puede ser offline o recién unido
+        -- Encolar como pendiente; se aplicará en el próximo GUILD_ROSTER_UPDATE
         M.state.pendingNotes = M.state.pendingNotes or {}
         M.state.pendingNotes[resolvedMain] = (M.state.pendingNotes[resolvedMain] or 0) + delta
     end
@@ -460,29 +519,37 @@ end
 function M:FlushPendingOfficerNotes()
     if not self.state or not self.state.pendingNotes then return end
     if not CanEditOfficerNote() then return end
-    local n = GetNumGuildMembers() or 0
-    if n == 0 then return end
+    if next(M._rosterCache) == nil then return end  -- cache aún no listo
+
     local toRemove = {}
+
     for name, delta in pairs(self.state.pendingNotes) do
-        -- Solo aplicar si sigue siendo main o no es alter
         local isSafeMain = (self:GetResolvedMain(name) == name)
-        if isSafeMain then
-            for i = 1, n do
-                local guildName, _, _, _, _, _, _, note = GetGuildRosterInfo(i)
-                if guildName and guildName == name then
-                    local ep, gp = DecodeOfficerNote(note)
-                    local currentBalance = (ep or 0) - (gp or 0)
-                    local newBalance = math.max(0, currentBalance + delta)
-                    GuildRosterSetOfficerNote(i, tostring(newBalance))
-                    table.insert(toRemove, name)
-                    break
-                end
-            end
-        else
+        if not isSafeMain then
             -- Ya no es main → descartar
             table.insert(toRemove, name)
+        else
+            local cacheEntry = M._rosterCache[name]
+            if cacheEntry then
+                local ep, gp = DecodeOfficerNote(cacheEntry.note)
+                local currentBalance = (ep or 0) - (gp or 0)
+                local newBalance     = math.max(0, currentBalance + delta)
+                local newNote        = tostring(newBalance)
+                -- Buscar índice en roster
+                local n = GetNumGuildMembers() or 0
+                for i = 1, n do
+                    local guildName = GetGuildRosterInfo(i)
+                    if guildName and guildName == name then
+                        QueueOfficerNoteWrite(i, name, newNote)
+                        table.insert(toRemove, name)
+                        break
+                    end
+                end
+            end
+            -- Si no está en cache, dejar pendiente hasta el próximo evento
         end
     end
+
     for _, nm in ipairs(toRemove) do
         self.state.pendingNotes[nm] = nil
     end
@@ -710,6 +777,12 @@ function M:ImportFromNotes()
                 ai.ranks[name]        = rankIndex
                 ai.officerNotes[name] = officerNote or ""
                 ai.lastSeen[name]     = time()
+                -- Sincronizar cache local durante sincronización manual
+                M._rosterCache[name] = M._rosterCache[name] or {}
+                M._rosterCache[name].class  = classFile or classDisplay or "UNKNOWN"
+                M._rosterCache[name].rank   = rankIndex or 99
+                M._rosterCache[name].online = online or false
+                M._rosterCache[name].note   = officerNote or ""
             end
         end
         
@@ -803,129 +876,6 @@ function M:ExportJSON()
 
     if #list == 0 then return "[]" end
     return "[" .. table.concat(list, ",") .. "]"
-end
-
--- ---------- UI (POC) ----------
-function M:BuildUI(parent)
-    local Skin = RMS.Skin
-    local C = Skin.COLOR
-    local panel = CreateFrame("Frame", nil, parent)
-
-    local header = Skin:Header(panel, "Gestión DKP")
-    header:SetPoint("TOPLEFT", 8, -8); header:SetPoint("TOPRIGHT", -8, -8)
-
-    local status = panel:CreateFontString(nil, "OVERLAY")
-    Skin:Font(status, 12, true)
-    status:SetPoint("RIGHT", header, "RIGHT", -10, 0)
-
-    -- Controls row
-    local ctrl = CreateFrame("Frame", nil, panel)
-    ctrl:SetHeight(30)
-    ctrl:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
-    ctrl:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -8)
-
-    local deltaBox = Skin:EditBox(ctrl, 80, 22)
-    deltaBox:SetPoint("LEFT", 6, 0)
-    deltaBox:SetText("0")
-
-    local reasonBox = Skin:EditBox(ctrl, 320, 22)
-    reasonBox:SetPoint("LEFT", deltaBox, "RIGHT", 8, 0)
-
-    local awardBtn = Skin:Button(ctrl, "Aplicar", 90, 22)
-    awardBtn:SetPoint("LEFT", reasonBox, "RIGHT", 8, 0)
-
-    local undoBtn = Skin:Button(ctrl, "Deshacer", 90, 22)
-    undoBtn:SetPoint("LEFT", awardBtn, "RIGHT", 6, 0)
-
-    local syncBtn = Skin:Button(ctrl, "Sincronizar Notas", 140, 22)
-    syncBtn:SetPoint("LEFT", undoBtn, "RIGHT", 6, 0)
-
-    local importBtn = Skin:Button(ctrl, "Importar Notas", 120, 22)
-    importBtn:SetPoint("LEFT", syncBtn, "RIGHT", 6, 0)
-
-    local raidBtn = Skin:Button(ctrl, "Iniciar Raid", 110, 22)
-    raidBtn:SetPoint("RIGHT", -6, 0)
-
-    -- Scroll list of guild mains
-    local function buildRow(parent)
-        local r = CreateFrame("Frame", nil, parent)
-        r:SetHeight(20)
-        local bg = r:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetTexture(Skin.TEX_WHITE); r.bg = bg
-
-        local cb = Skin:CheckBox(r, "")
-        cb:SetPoint("LEFT", 0, 0)
-
-        local name = r:CreateFontString(nil, "OVERLAY")
-        Skin:Font(name, 12, false)
-        name:SetPoint("LEFT", cb, "RIGHT", 6, 0)
-        name:SetJustifyH("LEFT")
-
-        local bal = r:CreateFontString(nil, "OVERLAY")
-        Skin:Font(bal, 12, true)
-        bal:SetPoint("RIGHT", -6, 0)
-
-        cb.OnValueChanged = function(_, val)
-            if r._item then M.selected[r._item.name] = val end
-        end
-        r.checkbox = cb; r.name = name; r.balance = bal
-        r:SetScript("OnMouseUp", function() r.checkbox.box:Click() end)
-        return r
-    end
-
-    local function updateRow(r, item, idx, alt)
-        if not item then return end
-        r._item = item
-        r.bg:SetVertexColor(alt and 0.10 or 0.13, alt and 0.10 or 0.13, alt and 0.12 or 0.15, 0.6)
-        r.name:SetText(item.name .. (item.online and "" or " (off)") )
-        r.balance:SetText(tostring(M:GetBalance(item.name)))
-        r.checkbox:SetChecked(M.selected[item.name])
-    end
-
-    local list = Skin:ScrollList(panel, 22, buildRow, updateRow)
-    list:SetPoint("TOPLEFT", ctrl, "BOTTOMLEFT", 0, -8)
-    list:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, 8)
-
-    -- Wiring actions
-    awardBtn:SetScript("OnMouseUp", function()
-        local delta = tonumber(deltaBox:GetText()) or 0
-        local reason = reasonBox:GetText()
-        local players = {}
-        for name, sel in pairs(M.selected) do if sel then table.insert(players, name) end end
-        M:Award(players, delta, reason)
-    end)
-    undoBtn:SetScript("OnMouseUp", function() M:Undo() end)
-    syncBtn:SetScript("OnMouseUp", function() M:ImportFromNotes() end)
-    importBtn:SetScript("OnMouseUp", function() RMS:Print(M:ExportJSON()) end)
-    raidBtn:SetScript("OnMouseUp", function()
-        if self.state and self.state.activeRaid then self:EndRaid() else self:StartRaid() end
-    end)
-
-    -- expose ui handles and initial population
-    self._ui = { panel = panel, status = status, list = list, deltaBox = deltaBox, reasonBox = reasonBox }
-    self:Refresh()
-    return panel
-end
-
-function M:Refresh()
-    if not self._ui then return end
-    local C = RMS.Skin.COLOR
-    if self.state and self.state.activeRaid then
-        self._ui.status:SetText("RAID: " .. (self.state.raids and (self.state.raids[self.state.activeRaid] and self.state.raids[self.state.activeRaid].name or "?") or "?"))
-        self._ui.status:SetTextColor(unpack(C.good))
-    else
-        local sText = "Sin Raid Activa"
-        if self._waitingForRoster then
-            sText = sText .. " | |cffffff00Actualizando roster...|r"
-        end
-        self._ui.status:SetText(sText)
-        self._ui.status:SetTextColor(unpack(C.textDim))
-    end
-
-    -- snapshot roster
-    local roster = self:GuildMembers() or {}
-    local data = {}
-    for i, v in ipairs(roster) do data[i] = v end
-    self._ui.list:SetData(data)
 end
 
 -- ---------- comm ----------
@@ -1548,7 +1498,7 @@ function M:Refresh()
         if not state.altIndexSeeded then
             statusText = statusText .. " | |cffff6060(Sin sincronizaci\195\179n administrativa)|r"
         end
-        if self._waitingForRoster then
+        if not M._rosterReady then
             statusText = statusText .. " | |cffffff00(Actualizando roster...)|r"
         end
         self._ui.status:SetText(statusText)
