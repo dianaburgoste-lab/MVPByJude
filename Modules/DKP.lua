@@ -1,20 +1,16 @@
--- MVP By Jude -- DKP
--- Per-guild DKP standings. Officers (rank index <= configured threshold) can
--- award/deduct points. Sync over the GUILD addon channel so every guild member
--- with the addon sees the same standings. Late-join sync from any officer.
+-- MVPByJude — Módulo DKP
+-- Gestión de puntos DKP por hermandad. Los oficiales pueden asignar y
+-- descontar puntos. Los cambios se sincronizan por el canal GUILD.
 
 local RMS = MVPByJude
 local M = RMS:RegisterModule("dkp", { title = "Gestión DKP", order = 3 })
 
--- [CACHE] Roster local persistente — fuente de verdad para LECTURA
--- Se puebla EXCLUSIVAMENTE dentro del handler GUILD_ROSTER_UPDATE,
--- donde el engine ya procesó la respuesta del servidor (datos garantizados).
+-- Roster local en memoria; se puebla en GUILD_ROSTER_UPDATE
 M._rosterCache = {}   -- [name] = {class, rank, online, note}
 M._rosterReady = false
 
--- [THROTTLE] Cola de escritura de Officer Notes — patrón LibGuildStorage
--- Escribe 1 nota por frame via OnUpdate para no saturar el servidor
--- en operaciones masivas (Award a 25+ jugadores).
+-- Cola de escritura de notas de oficial: una escritura por frame
+-- para evitar saturar el servidor en operaciones masivas.
 local _writeQueue  = {}   -- {index=i, note=str, name=str}
 local _writeFrame  = nil
 
@@ -26,7 +22,6 @@ local function _GetWriteFrame()
         local entry = table.remove(_writeQueue, 1)
         if entry then
             GuildRosterSetOfficerNote(entry.index, entry.note)
-            -- Actualizar cache inmediatamente (sin esperar el próximo evento)
             if M._rosterCache[entry.name] then
                 M._rosterCache[entry.name].note = entry.note
             end
@@ -42,10 +37,6 @@ local function QueueOfficerNoteWrite(index, name, note)
     _GetWriteFrame():Show()
 end
 
--- [CACHE] Población del roster cache.
--- GUILD_ROSTER_UPDATE es el único punto donde los datos están GARANTIZADOS
--- (el engine ya procesó la respuesta del servidor). Aquí GetNumGuildMembers()
--- retorna el roster completo (online + offline) sin SetGuildRosterShowOffline.
 do
     local _guildCacheFrame = CreateFrame("Frame")
     _guildCacheFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
@@ -72,7 +63,7 @@ do
         end
         M._rosterReady = true
 
-        -- Actualizar rank cache a partir del roster ya cargado (sin llamada extra)
+        -- Refrescar el cache de rangos a partir del roster ya cargado
         M._rankCacheTime = 0
         for k in pairs(M._rankCache) do M._rankCache[k] = nil end
         for name, info in pairs(M._rosterCache) do
@@ -80,15 +71,8 @@ do
         end
         M._rankCacheTime = GetTime()
 
-        -- Vaciar notas pendientes con el roster recién actualizado
-        if M.state then
-            pcall(function() M:FlushPendingOfficerNotes() end)
-        end
-
-        -- Refrescar UI
-        if M._ui then
-            pcall(function() M:Refresh() end)
-        end
+        if M.state then pcall(function() M:FlushPendingOfficerNotes() end) end
+        if M._ui then pcall(function() M:Refresh() end) end
     end)
 end
 
@@ -96,12 +80,12 @@ end
 M.state    = nil   -- bound to RMS.db.dkp[<guild>] in OnInit / guild change
 M.selected = {}    -- [playerName] = true (UI multi-select)
 
--- [NEW] Constantes para anuncios
+-- Constantes para anuncios
 local MAX_CHAT_LEN = 248
 local CONT_PREFIX  = "[+] "
 local MSG_DELAY    = 1.5
 
--- [NEW] Sistema de Timer Seguro (Anti-Leak)
+-- Sistema de timer con protección anti-leak
 local _timerQueue = {}
 local _timerFrame = nil
 
@@ -132,7 +116,7 @@ function M:ScheduleTimer(callback, delay)
     _GetTimerFrame():Show()
 end
 
--- [NEW] Función de Anuncio por Lotes
+-- Función de Anuncio por Lotes
 function M:AnnounceEPBatch(delta, reason, players)
     local cleanReason = reason or "Sin motivo"
     -- Guard: Truncar motivo si es muy largo para asegurar que el header no consuma todo el espacio
@@ -179,7 +163,7 @@ function M:AnnounceEPBatch(delta, reason, players)
     end
 end
 
--- Cache de rangos para evitar spam de GuildRoster() [FIX BUG #1]
+-- Cache de rangos para evitar spam de GuildRoster()
 M._rankCache = {}         -- [playerName] = rankIndex
 M._rankCacheTime = 0      -- timestamp del último refresh
 local RANK_CACHE_TTL = 30 -- segundos de validez del cache
@@ -251,12 +235,12 @@ local function emptyState()
     }
 end
 
--- [NEW] Generador de UID único para deduplicación de log
+-- Generador de UID único para deduplicación de log
 local function GenerateUID()
     return string.format("%s:%d:%04d", (UnitName("player") or "?"), time(), math.random(1, 9999))
 end
 
--- [NEW] Lock de escritura concurrente (anti-race condition)
+-- Lock de escritura concurrente (anti-race condition)
 local _writeLock = {} -- [playerName] = true mientras se escribe
 
 local STARTER_BOSSES = {
@@ -319,12 +303,9 @@ function M:_RefreshRankCache()
 
     self._refreshingRankCache = true
 
-    -- Automatizado: NO forzamos offline para evitar flickers en la UI social del usuario
+    -- No forzamos offline para evitar flickers en la UI social del usuario
     WithFullGuildRoster(function()
-        -- [FIXED: FIX-DKP-2] Nota: GetNumGuildMembers() sin args da el total (online+offline) solo si
-        -- SetGuildRosterShowOffline(true) está activo O después de llamar GuildRoster().
         local n = GetNumGuildMembers() or 0
-        -- [FIXED: FIX-DKP-1]
         for k in next, M._rankCache do M._rankCache[k] = nil end
 
         for i = 1, n do
@@ -341,7 +322,7 @@ function M:_RefreshRankCache()
 end
 
 function M:_RankIndexOf(playerName)
-    -- Solo refrescar si el cache expiró (cada 30 segundos como máximo) [FIX BUG #1]
+    -- Refrescar solo si el cache expiró
     if GetTime() - M._rankCacheTime > RANK_CACHE_TTL then
         self:_RefreshRankCache()
     end
@@ -467,7 +448,7 @@ function M:GuildMembers()
 end
 
 -- ---------- core actions (officer only) ----------
--- [IMPROVED] Escritura con protección contra race condition
+-- Escritura con protección contra race condition
 local function updateOfficerNote(playerName, delta)
     if not CanEditOfficerNote() then return end
     local resolvedMain = M:GetResolvedMain(playerName)
@@ -614,7 +595,7 @@ function M:Award(players, delta, reason)
     local classMap = {}
     for _, m in ipairs(roster) do
         classMap[m.name] = m.class
-        -- FIX BUG #1: Tambi\195\169n mapear alters al class del Main para evitar corrupci\195\179n
+        -- También mapear alters al class del Main para evitar corrupción
         local alts = self.altIndex and self.altIndex.mainToAlts[m.name]
         if alts then
             for _, altName in ipairs(alts) do
@@ -641,7 +622,7 @@ function M:Award(players, delta, reason)
 
     local actionId = GenerateUID()
 
-    -- [FIXED] Anuncio inteligente con delay anti-flood y prevención de fugas de memoria
+    -- Anuncio con delay para evitar flood en chat del guild
     self:AnnounceEPBatch(delta, reason, finalPlayers)
 
     local entry = {
@@ -652,7 +633,7 @@ function M:Award(players, delta, reason)
     table.insert(M.state.log, 1, entry)
     if #M.state.log > 1000 then table.remove(M.state.log) end
 
-    -- [NEW] Guardar en undoStack para permitir Deshacer
+    -- Guardar en undoStack para permitir Deshacer
     self.state.undoStack = self.state.undoStack or {}
     table.insert(self.state.undoStack, {
         id = actionId, time = time(), by = RMS:PlayerName(),
@@ -675,7 +656,7 @@ function M:Award(players, delta, reason)
     self:Refresh()
 end
 
--- [NEW] Sistema de Undo: revierte la última acción de DKP
+-- Sistema de Undo: revierte la última acción de DKP
 function M:Undo()
     if not self.state then RMS:Print("No estás en una hermandad.") return end
     if not self:IsOfficer() then RMS:Print("Solo los oficiales pueden deshacer.") return end
@@ -730,14 +711,14 @@ function M:Reset()
     if not self.state then return end
     if not self:IsOfficer() then RMS:Print("Only officers can reset DKP.") return end
     
-    -- MODIFICACION HIBRIDA: Limpiar notas
+    -- Limpiar notas
     for name, _ in pairs(GetRosterStandings()) do
         if self:GetResolvedMain(name) == name then
             local n = GetNumGuildMembers() or 0
             for i = 1, n do
                 local guildName = GetGuildRosterInfo(i)
-                if guildName and guildName == name then
-                    GuildRosterSetOfficerNote(i, "0.0")
+                    if guildName and guildName == name then
+                    QueueOfficerNoteWrite(i, name, "0.0")
                     break
                 end
             end
@@ -885,7 +866,7 @@ RMS.Comm:On("dkp", "delta", function(p, sender)
     if sender == RMS:PlayerName() then return end  -- already applied locally
     local delta = tonumber(p.d); if not delta then return end
 
-    -- [NEW] Deduplicación por UID: ignorar si ya tenemos esta entrada
+    -- Deduplicación por UID: ignorar si ya tenemos esta entrada
     if p.id then
         for _, existing in ipairs(M.state.log) do
             if existing.id == p.id then return end
@@ -936,7 +917,8 @@ function M:ImportFromJSON(str)
                     local _, gp = DecodeOfficerNote(note)
                     gp = gp or 0
                     local ep = val + gp
-                    GuildRosterSetOfficerNote(i, string.format("%d.%d", math.max(0, ep), gp))
+                    local newNote = string.format("%d.%d", math.max(0, ep), gp)
+                    QueueOfficerNoteWrite(i, resolved, newNote)
                     count = count + 1
                     break
                 end
@@ -1029,17 +1011,6 @@ M.events = {
     PLAYER_GUILD_UPDATE  = function(self) self:LoadGuildState(); if self._ui then self:Refresh() end end,
     GUILD_ROSTER_UPDATE  = function(self)
         M._rankCacheTime = 0
-
-        if M._suspendGuildRefresh then
-            return
-        end
-
-        -- Intentar vaciar notas pendientes cuando el roster cambie
-        self:FlushPendingOfficerNotes()
-
-        if self._ui then
-            self:Refresh()
-        end
     end,
     RAID_ROSTER_UPDATE   = function(self)
         -- Auto-end raid if player leaves raid group
@@ -1092,7 +1063,7 @@ function M:BuildUI(parent)
     listHdr:SetPoint("TOPLEFT", status, "BOTTOMLEFT", -4, -6)
     listHdr:SetWidth(LIST_W)
 
-    -- [NEW] Fila de checkboxes de filtrado (debajo del header)
+    -- Fila de checkboxes de filtrado (debajo del header)
     local filterRow = CreateFrame("Frame", nil, panel)
     filterRow:SetPoint("TOPLEFT", listHdr, "BOTTOMLEFT", 0, -2)
     filterRow:SetSize(LIST_W, 20)
@@ -1321,7 +1292,7 @@ function M:BuildUI(parent)
     importBtn:SetPoint("RIGHT", exportBtn, "LEFT", -4, 0)
     importBtn:SetScript("OnMouseUp", function() self:ShowImportPopup() end)
 
-    -- [NEW] Botón Deshacer
+    -- Botón Deshacer
     local undoBtn = Skin:Button(actBody, "Deshacer", 80, 22)
     undoBtn:SetPoint("BOTTOMLEFT", 8, 8)
     undoBtn:SetScript("OnMouseUp", function() self:Undo() end)
@@ -1420,7 +1391,7 @@ function M:BuildUI(parent)
     return panel
 end
 
--- MODIFICACION HIBRIDA: Ventana Emergente para copiar JSON
+-- Ventana emergente para copiar JSON
 function M:ShowExportPopup(text)
     local Skin = RMS.Skin
     local f = self.exportPopup
@@ -1453,7 +1424,7 @@ function M:ShowExportPopup(text)
         
         local eb = CreateFrame("EditBox", nil, ebScroll)
         eb:SetMultiLine(true)
-        eb:SetMaxLetters(10000) -- [FIXED: FIX-DKP-4]
+        eb:SetMaxLetters(10000)
         eb:SetFont(Skin.FONT, 12, "")
         eb:SetWidth(440)
         eb:SetScript("OnEscapePressed", function() f:Hide() end)
@@ -1548,7 +1519,7 @@ function M:Refresh()
             seen[m.name] = true
         end
         
-        -- [NEW] Agregar mains offline que SALIERON del guild si "Mains Offline" está activado
+        -- Agregar mains offline que salieron del guild si "Mains Offline" está activado
         if not self.filterOnlyRaid and self.filterViewOffline then
             for name, s in pairs(rosterStandings) do
                 if not seen[name] then
@@ -1564,7 +1535,7 @@ function M:Refresh()
             end
         end
         
-        -- [NEW] Filtrar solo conectados si "Online" está activado
+        -- Filtrar solo conectados si "Online" está activado
         if self.filterOnlyOnline then
             local filtered = {}
             for _, row in ipairs(rows) do
