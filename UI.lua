@@ -180,8 +180,38 @@ function UI:Build()
     self.tabs = {}
     self.panels = {}
 
+    -- Build dynamic tab order from RMS.moduleOrder (all registered modules)
+    local tabOrder = {}
+    for _, id in ipairs(RMS.moduleOrder or {}) do
+        local mod = RMS:GetModule(id)
+        if mod and not mod.hidden then
+            table.insert(tabOrder, { id = id, order = mod.order or 100, title = mod.title or id })
+        end
+    end
+    
+    -- [FIX: Ensure SoftRes always appears] Guarantee softres is in the list
+    local hasSoftRes = false
+    for _, entry in ipairs(tabOrder) do
+        if entry.id == "softres" then
+            hasSoftRes = true
+            break
+        end
+    end
+    if not hasSoftRes and RMS.modules and RMS.modules.softres then
+        local softresMod = RMS.modules.softres
+        table.insert(tabOrder, { id = "softres", order = softresMod.order or 100, title = softresMod.title or "BOTIN" })
+    end
+    
+    -- Sort by order field
+    table.sort(tabOrder, function(a, b)
+        if a.order ~= b.order then return a.order < b.order end
+        return a.title < b.title
+    end)
+
     local y = -8
-    for _, id in ipairs(TAB_ORDER) do
+    local firstTabId = nil
+    for _, entry in ipairs(tabOrder) do
+        local id = entry.id
         if id:sub(1,5) == "_sep_" then
             local sepLabel = ({
                 _sep_mrt     = "── MRT ──",
@@ -203,7 +233,8 @@ function UI:Build()
         else
             local mod = RMS:GetModule(id)
             if mod then
-                local label = TAB_NAMES[id] or mod.title
+                if not firstTabId then firstTabId = id end
+                local label = TAB_NAMES[id] or mod.title or id
                 local b = Skin:TabButton(tabbar, label, 138, 24)
                 b:SetPoint("TOPLEFT", 6, y)
                 b:SetScript("OnClick", function() UI:Show(id) end)
@@ -222,7 +253,7 @@ function UI:Build()
     self.status = status
     self:UpdateStatus()
 
-    self:_SelectTab(TAB_ORDER[1])
+    self:_SelectTab(firstTabId or "dkp")
 
     return f
 end
