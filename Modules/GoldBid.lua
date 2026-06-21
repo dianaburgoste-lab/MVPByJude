@@ -448,6 +448,17 @@ RMS.Comm:On("goldbid", "noaward", function(_, sender)
     M:ArchiveSession(); M:Refresh()
 end)
 
+-- [BUG 2 FIX] Delegate handler at module level with security check
+RMS.Comm:On("goldbid", "delegate", function(p, sender)
+    if not M.session or M.session.id ~= p.id then return end
+    if M.session.host ~= sender then return end   -- security: only previous host can delegate
+    M.session.host = p.host
+    M:Refresh()
+    if p.host == RMS:PlayerName() then
+        RMS:Print("|cff00ff00[Subasta]|r El host anterior te ha delegado la subasta de %s.", M.session.link)
+    end
+end)
+
 -- ---------- trade detection (host side) ----------
 local trade = { partner = nil, theirCopper = 0, lastShown = nil }
 
@@ -493,6 +504,24 @@ end
 local function onTradeClosed()
     trade.partner = nil; trade.theirCopper = 0
 end
+
+-- [BUG 1 FIX] Register trade detection frame at module level
+local tradeFrame = CreateFrame("Frame")
+tradeFrame:RegisterEvent("TRADE_SHOW")
+tradeFrame:RegisterEvent("TRADE_MONEY_CHANGED")
+tradeFrame:RegisterEvent("UI_INFO_MESSAGE")
+tradeFrame:RegisterEvent("TRADE_CLOSED")
+tradeFrame:SetScript("OnEvent", function(_, event, msg)
+    if event == "TRADE_SHOW" then
+        onTradeShow()
+    elseif event == "TRADE_MONEY_CHANGED" then
+        onTradeMoneyChanged()
+    elseif event == "UI_INFO_MESSAGE" then
+        onUiInfoMessage(nil, msg)
+    elseif event == "TRADE_CLOSED" then
+        onTradeClosed()
+    end
+end)
 
 M.events = {
     CHAT_MSG_WHISPER = function(self, msg, sender)
@@ -1120,15 +1149,6 @@ function M:BuildHistoryWindow()
     f:Hide()
     self.historyWin = f
 
-    RMS.Comm:On("goldbid", "delegate", function(p, sender)
-        if M.session and M.session.id == p.id then
-            M.session.host = p.host
-            M:Refresh()
-            if p.host == RMS:PlayerName() then
-                RMS:Print("|cff00ff00[Subasta]|r El host anterior te ha delegado la subasta de %s.", M.session.link)
-            end
-        end
-    end)
     local title = CreateFrame("Frame", nil, f)
     title:SetPoint("TOPLEFT"); title:SetPoint("TOPRIGHT")
     title:SetHeight(30)
