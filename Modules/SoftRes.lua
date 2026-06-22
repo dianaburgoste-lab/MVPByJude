@@ -1,14 +1,13 @@
 -- MVP By Jude -- BOTIN
--- Automatically tracks epic loot drops from bosses and trash.
--- Groups items by source (Boss Name or Trash).
--- Includes DKP billing system.
+-- Displays loot history from Method Raid Tools (MRT).
+-- When MRT is available, BOTIN uses its Loot History as the source of truth.
+-- Includes DKP billing system for charged items.
 
 local RMS = MVPByJude
 local M = RMS:RegisterModule("softres", { title = "BOTIN", order = 1 })
 
--- ---------- Configuration & Safety ----------
+-- ---------- Configuration ----------
 local BlizzGetItemInfo = _G.GetItemInfo  -- alias directo para evitar shadowing
-local MIN_LOOT_QUALITY = 4  -- 4 = Épico; cambiar a 3 para incluir raros
 local SOFTRES_DEBUG = false  -- activar para logs de depuración
 
 local function DebugPrint(...)
@@ -18,10 +17,10 @@ local function DebugPrint(...)
 end
 
 -- ---------- Data Structure ----------
+-- M.state now only tracks which items have been charged (for UI status).
+-- Loot entries come from RMS.MRT:GetRecentLoot().
 M.state = {
-    loot = {},          -- [sourceName] = { {link="...", player="...", time=..., charged=false}, ... }
-    lastBoss = "Trash", -- Current anchor for loot
-    lastBossTime = 0,   -- Time when last boss died
+    charged = {},  -- [itemLink] = true (items we've already charged DKP for)
 }
 
 local function persist()
@@ -34,7 +33,6 @@ local function restore()
 end
 
 -- ---------- Helpers ----------
--- Extrae el ID y calidad de un item link de forma segura
 local function SafeGetItemInfoFromLink(link)
     if not link then return nil end
     local id = tonumber(link:match("item:(%d+)"))
@@ -43,159 +41,41 @@ local function SafeGetItemInfoFromLink(link)
     return id, quality
 end
 
--- List of Bosses to track (Simplified for ICC/RS)
-local BOSS_IDS = {
-    ["Lord Marrowgar"] = true, ["Lord Tuétano"] = true,
-    ["Lady Deathwhisper"] = true, ["Lady Susurramuerte"] = true,
-    ["Icecrown Gunship Battle"] = true, ["Batalla aérea Corona de Hielo"] = true,
-    ["Deathbringer Saurfang"] = true, ["Libramorte Colmillosauro"] = true,
-    ["Festergut"] = true, ["Panzachancro"] = true,
-    ["Rotface"] = true, ["Carapútrea"] = true,
-    ["Professor Putricide"] = true, ["Profesor Putricidio"] = true,
-    ["Blood Queen Lana'thel"] = true, ["Reina de Sangre Lana'thel"] = true,
-    ["Valithria Dreamwalker"] = true, ["Valithria Caminasueños"] = true,
-    ["Sindragosa"] = true,
-    ["The Lich King"] = true, ["El Rey Exánime"] = true,
-    ["Halion"] = true,
-}
-
-local IGNORE_ITEMS = {
-    [49426] = true, -- Emblem of Frost
-    [47241] = true, -- Emblem of Triumph
-    [50444] = true, -- Sack of Frosty Treasures (Weekly)
-}
-
 -- ---------- DKP Billing Logic ----------
-function M:ChargeDKP(source, index, amount)
-    local entry = self.state.loot[source][index]
-    if not entry or entry.charged then return end
+function M:ChargeDKP(player, itemLink, amount)
+    if not player or not itemLink then return end
     
     local dkpMod = RMS:GetModule("dkp")
-    if not dkpMod then RMS:Print("Error: Módulo DKP no encontrado.") return end
+    if not dkpMod then 
+        RMS:Print("Error: Módulo DKP no encontrado.")
+        return 
+    end
     
     if not dkpMod:IsOfficer() then
         RMS:Print("Solo los oficiales pueden cobrar DKP.")
         return
     end
 
+    -- Mark as charged to avoid double-charging in UI
+    M.state.charged[itemLink] = true
+    persist()
+
     -- Apply the deduction
-    dkpMod:Award({entry.player}, -amount, "Botin: " .. (entry.link or "Item"))
+    dkpMod:Award({player}, -amount, "BOTIN: " .. (itemLink or "Item"))
     
     -- Send announcement to Guild
-    local msg = ("[MVP By Jude] Se cobraron %d DKP a %s por %s."):format(amount, entry.player, entry.link)
+    local msg = ("[MVP By Jude] Se cobraron %d DKP a %s por %s."):format(amount, player, itemLink)
     SendChatMessage(msg, "GUILD")
     
-    entry.charged = true
-    persist()
     self:Refresh()
-end
-
--- ---------- Logic ----------
-function M:AddLoot(itemLink, player)
-
-    local id, quality = SafeGetItemInfoFromLink(itemLink)
-    if not id then return end
-    
-
-    if quality == nil then
-        DebugPrint("|cffffa000[SoftRes]|r Item no en caché (quality=nil): %s", itemLink)
-        return
-    end
-
-
-    if quality < MIN_LOOT_QUALITY then 
-        DebugPrint("|cffaaaaaa[SoftRes]|r Ignorado por calidad (%d < %d): %s", quality, MIN_LOOT_QUALITY, itemLink)
-        return 
-    end
-
-    if IGNORE_ITEMS[id] then return end
-
-    local source = "Trash / Varios"
-    if (GetTime() - M.state.lastBossTime) < 300 then
-        source = M.state.lastBoss
-    end
-
-    M.state.loot[source] = M.state.loot[source] or {}
-    
-    -- Avoid duplicates
-    for _, entry in ipairs(M.state.loot[source]) do
-        if entry.link == itemLink and entry.player == player then return end
-    end
-
-    table.insert(M.state.loot[source], {
-        link    = itemLink,
-        player  = player,
-        time    = GetTime(),
-        charged = false,
-    })
-    
-    DebugPrint("|cff80ff80[SoftRes]|r Loot agregado: %s para %s", itemLink, player)
-    persist()
-    self:Refresh()
-end
-
-function M:ClearLoot()
-    M.state.loot = {}
-    M.state.lastBoss = "Trash"
-    M.state.lastBossTime = 0
-    persist()
-    self:Refresh()
-    RMS:Print("Historial de BOTÍN limpiado.")
-end
-
-function M:MarkLooted(itemLink)
-    if not itemLink then return end
-    local found = false
-    for source, items in pairs(M.state.loot) do
-        for i = #items, 1, -1 do
-            if items[i].link == itemLink then
-                table.remove(items, i)
-                found = true
-            end
-        end
-        if #items == 0 then M.state.loot[source] = nil end
-    end
-    if found then
-        persist()
-        self:Refresh()
-    end
 end
 
 -- ---------- Events ----------
+-- [DEPRECATED] BOTIN no longer tracks loot manually; MRT handles that.
 M.events = {
     PLAYER_LOGIN = function(self)
         restore()
         self:Refresh()
-    end,
-    CHAT_MSG_LOOT = function(self, _, msg)
-        
-        local link = msg:match("(|c%x+|Hitem:.-|h.-|h|r)")
-        if not link then return end
-        link = link:gsub("%.$", "")
-
-        local player = msg:match("^(.-)%s+recibe botín:")
-                    or msg:match("^(.-)%s+obtiene:")
-        if not player then
-            -- Mensaje propio: "Obtienes botín:" o "Recibes botín:"
-            if msg:find("Obtienes botín:") or msg:find("Recibes botín:") or msg:find("obtiene:") then
-                player = RMS:PlayerName()
-            end
-        end
-
-        if player and link then
-            self:AddLoot(link, player)
-        end
-    end,
-    COMBAT_LOG_EVENT_UNFILTERED = function(self, event, timestamp, subevent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags)
-        -- Firma corregida para 3.3.5a
-        DebugPrint("CLEU: %s -> %s (dest: %s)", subevent, destName or "nil", destGUID or "nil")
-        if subevent == "UNIT_DIED" then
-            if BOSS_IDS[destName] then
-                M.state.lastBoss = destName
-                M.state.lastBossTime = GetTime()
-                RMS:Print("|cff00ff00BOTÍN:|r Jefe detectado: " .. destName)
-            end
-        end
     end,
 }
 
@@ -205,18 +85,23 @@ function M:BuildUI(parent)
     local C    = Skin.COLOR
     local panel = CreateFrame("Frame", nil, parent)
 
-    local header = Skin:Header(panel, "BOTIN - Rastreador y Facturación")
+    local header = Skin:Header(panel, "BOTIN - Historial de Raid (MRT)")
     header:SetPoint("TOPLEFT", 8, -8)
     header:SetPoint("TOPRIGHT", -8, -8)
-
-    local clearBtn = Skin:Button(panel, "Limpiar Historial", 140, 24)
-    clearBtn:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -8)
-    clearBtn:SetScript("OnMouseUp", function() self:ClearLoot() end)
 
     local desc = panel:CreateFontString(nil, "OVERLAY")
     Skin:Font(desc, 11, false); desc:SetTextColor(unpack(C.textDim))
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -14)
-    desc:SetText("Control de botín y cobro de DKP (60/70 para fragmentos).")
+    desc:SetText("Historial de botín de MRT con control de cobro DKP (60/70 para fragmentos).")
+
+    -- Check if MRT is available
+    if not RMS.MRT:IsAvailable() then
+        local noMRT = panel:CreateFontString(nil, "OVERLAY")
+        Skin:Font(noMRT, 12, false); noMRT:SetTextColor(1, 0.5, 0)
+        noMRT:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -20)
+        noMRT:SetText("|cffff9900MRT no está cargado.|r Instala Method Raid Tools para ver el historial de botín avanzado.")
+        return panel
+    end
 
     -- Summary Panel
     local summary = Skin:Panel(panel)
@@ -227,12 +112,12 @@ function M:BuildUI(parent)
     local shardCount = summary:CreateFontString(nil, "OVERLAY")
     Skin:Font(shardCount, 14, true); shardCount:SetTextColor(unpack(C.accent))
     shardCount:SetPoint("LEFT", 12, 0)
-    shardCount:SetText("Fragmentos: 0")
+    shardCount:SetText("Items: 0")
     
     local pendingFs = summary:CreateFontString(nil, "OVERLAY")
     Skin:Font(pendingFs, 11, false); pendingFs:SetTextColor(unpack(C.text))
     pendingFs:SetPoint("LEFT", shardCount, "RIGHT", 20, 0)
-    pendingFs:SetText("Pendientes de cobro: 0")
+    pendingFs:SetText("Pendientes: 0")
 
     local function buildRow(parent)
         local r = CreateFrame("Button", nil, parent)
@@ -251,9 +136,9 @@ function M:BuildUI(parent)
         r.chargeBtn = chargeBtn
 
         r:SetScript("OnEnter", function(s)
-            if not s.link then return end
+            if not s.itemLink then return end
             GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
-            GameTooltip:SetHyperlink(s.link)
+            GameTooltip:SetHyperlink(s.itemLink)
             GameTooltip:Show()
         end)
         r:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -269,16 +154,16 @@ function M:BuildUI(parent)
             r.text:SetPoint("LEFT", 10, 0)
             r.sub:SetText("")
             r.chargeBtn:Hide()
-            r.link = nil
+            r.itemLink = nil
         else
             r.bg:SetVertexColor(alt and 0.10 or 0.13, alt and 0.10 or 0.13, alt and 0.12 or 0.15, 0.6)
 
-            local _, _, _, _, _, _, _, _, _, itemIcon = BlizzGetItemInfo(data.link)
+            local _, _, _, _, _, _, _, _, _, itemIcon = BlizzGetItemInfo(data.itemLink)
             r.icon:SetTexture(itemIcon or "Interface\\Icons\\INV_Misc_QuestionMark")
-            r.text:SetText(data.link)
+            r.text:SetText(data.itemLink)
             r.text:SetPoint("LEFT", 28, 0)
-            r.sub:SetText(data.player or "")
-            r.link = data.link
+            r.sub:SetText((data.player or "?") .. " @ " .. (data.difficultyName or "?"))
+            r.itemLink = data.itemLink
             
             if data.charged then
                 r.chargeBtn:SetText("|cff60ff60PAGADO|r")
@@ -289,8 +174,14 @@ function M:BuildUI(parent)
                 r.chargeBtn:Enable()
                 r.chargeBtn:Show()
                 r.chargeBtn:SetScript("OnMouseUp", function()
-    
-                    showChargeMenu({source = data.source, idx = data.idx})
+                    local menu = {
+                        { text = "Cobrar 60 DKP", func = function() M:ChargeDKP(data.player, data.itemLink, 60) end },
+                        { text = "Cobrar 70 DKP", func = function() M:ChargeDKP(data.player, data.itemLink, 70) end },
+                        { text = "Otro monto...", func = function()
+                            StaticPopup_Show("MVP_CHARGE_CUSTOM", nil, nil, {player = data.player, itemLink = data.itemLink})
+                        end },
+                    }
+                    RMS:ShowMenu(menu)
                 end)
             end
         end
@@ -308,7 +199,7 @@ function M:BuildUI(parent)
         hasEditBox = true,
         OnAccept = function(s, data)
             local val = tonumber(s.editBox:GetText())
-            if val then self:ChargeDKP(data.source, data.idx, val) end
+            if val then M:ChargeDKP(data.player, data.itemLink, val) end
         end,
         timeout = 0,
         whileDead = true,
@@ -322,48 +213,65 @@ end
 
 function M:Refresh()
     if not self._ui then return end
+    if not RMS.MRT:IsAvailable() then return end
+    
+    local history = RMS.MRT:GetRecentLoot(4)
     local displayData = {}
     local sources = {}
-    for sname in pairs(M.state.loot) do table.insert(sources, sname) end
+    
+    -- Group by instance/boss
+    local grouped = {}
+    for _, entry in ipairs(history) do
+        local key = (entry.instance ~= "" and entry.instance or entry.boss ~= "" and entry.boss or "Unknown")
+        if not grouped[key] then
+            grouped[key] = {}
+        end
+        table.insert(grouped[key], entry)
+    end
+    
+    -- Build display data with headers
+    for key in pairs(grouped) do
+        table.insert(sources, key)
+    end
     table.sort(sources, function(a, b)
-        if a == "Trash / Varios" then return false end
-        if b == "Trash / Varios" then return true end
         return a < b
     end)
-
+    
     local totalShards = 0
     local pendingCharges = 0
-
-    for _, sname in ipairs(sources) do
-        table.insert(displayData, { isHeader = true, name = sname })
-        for idx, entry in ipairs(M.state.loot[sname]) do
-            entry.source = sname
-            entry.idx = idx
-            table.insert(displayData, entry)
+    
+    for _, source in ipairs(sources) do
+        -- Add header
+        table.insert(displayData, { isHeader = true, name = source })
+        
+        -- Add entries for this source
+        for _, entry in ipairs(grouped[source]) do
+            local itemLink = entry.items[1] and entry.items[1].link or ""
+            local isCharged = M.state.charged[itemLink] == true
             
-            -- Count shards (ID 50274)
-            if entry.link:find("item:50274") then
+            table.insert(displayData, {
+                itemLink = itemLink,
+                player = entry.player,
+                difficultyName = entry.difficultyName or "",
+                charged = isCharged,
+                timestamp = entry.time,
+            })
+            
+            -- Count shards (ID 50274 or similar epic items)
+            if itemLink:find("item:50274") then
                 totalShards = totalShards + 1
-                if not entry.charged then pendingCharges = pendingCharges + 1 end
+                if not isCharged then
+                    pendingCharges = pendingCharges + 1
+                end
+            elseif not isCharged then
+                pendingCharges = pendingCharges + 1
             end
         end
     end
     
-    self._ui.shardCount:SetText("Fragmentos: " .. totalShards)
-    self._ui.pendingFs:SetText("Pendientes de cobro: " .. (pendingCharges > 0 and "|cffff6060" or "|cff60ff60") .. pendingCharges .. "|r")
+    self._ui.shardCount:SetText("Items: " .. #history)
+    self._ui.pendingFs:SetText("Pendientes: " .. (pendingCharges > 0 and "|cffff6060" or "|cff60ff60") .. pendingCharges .. "|r")
     
     self._ui.list:SetData(displayData)
 end
 
-
-
-local function showChargeMenu(data)
-    local menu = {
-        { text = "Cobrar 60 DKP", func = function() M:ChargeDKP(data.source, data.idx, 60) end },
-        { text = "Cobrar 70 DKP", func = function() M:ChargeDKP(data.source, data.idx, 70) end },
-        { text = "Otro monto...", func = function()
-            StaticPopup_Show("MVP_CHARGE_CUSTOM", nil, nil, data)
-        end },
-    }
-    RMS:ShowMenu(menu)
-end
